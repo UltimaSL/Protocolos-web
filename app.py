@@ -6,7 +6,7 @@ from flask import Flask, render_template, jsonify, request
 import router_model
 import config
 
-app = Flask(__name__, static_folder='public', template_folder='public') # Configura Flask para servir desde 'public'
+app = Flask(__name__, static_folder='public') # Configura Flask para servir desde 'public'
 
 # CORS(app) # Descomentar si aún tienes problemas de CORS y si el frontend se sirve por separado
 
