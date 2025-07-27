@@ -1,108 +1,106 @@
 # C:\xampp\htdocs\PaginaWeb-Examen\router_model.py
-from netmiko import ConnectHandler
-import re # Para expresiones regulares, útil para parsing
-import config # Importa la configuración del router
+import requests
+import json
+import config # Importa la configuración del router (ROUTER_IP, ROUTER_PORT, credenciales)
 
-def get_cli_output(command):
-    # --- Configuración del Dispositivo (obtenida de config.py) ---
-    device = {
-        "device_type": "cisco_ios", # Tipo de dispositivo para Netmiko
-        "host": config.ROUTER_IP,
-        "username": config.ROUTER_USERNAME,
-        "password": config.ROUTER_PASSWORD,
-        "port": config.ROUTER_PORT, # 22 para SSH, 23 para Telnet
-        "secret": config.ROUTER_ENABLE_PASSWORD, # Contraseña de enable secret
-        "global_delay_factor": 2 # Aumentar si hay problemas de timeout
+# Suprimir advertencias SSL para entornos de lab con certificados auto-firmados
+# (SOLO PARA LABS, NUNCA EN PRODUCCIÓN)
+requests.packages.urllib3.disable_warnings()
+
+# --- Función para obtener datos vía RESTCONF ---
+def get_restconf_data(path_suffix):
+    """
+    Realiza una petición GET a la API RESTCONF del router.
+    path_suffix: La parte de la ruta YANG que se añade a la URL base de RESTCONF.
+    """
+    router_ip = config.ROUTER_IP
+    router_port = config.ROUTER_PORT
+    username = config.ROUTER_USERNAME
+    password = config.ROUTER_PASSWORD
+
+    # Construye la URL completa del endpoint RESTCONF
+    # Usamos HTTP aquí porque el puerto 8080 en Azure VM se reenvía a HTTP puerto 80 en el router
+    url = f"http://{router_ip}:{router_port}/restconf/data/{path_suffix}"
+
+    headers = {
+        "Accept": "application/yang-data+json",  # Solicita respuesta en formato JSON
+        "Content-Type": "application/yang-data+json" # Especifica que el contenido es JSON (aunque sea GET)
     }
 
     try:
-        net_connect = ConnectHandler(**device)
-        net_connect.enable() # Entrar al modo enable
-        output = net_connect.send_command(command, use_textfsm=False) # No usar textfsm por ahora
-        net_connect.disconnect()
-        return output
-    except Exception as e:
-        print(f"Error al conectar o ejecutar comando CLI: {e}")
-        return f"Error al ejecutar comando: {command}. Error: {e}"
-
-# --- Funciones de Parsing (EJEMPLOS BÁSICOS - NECESITAN MUCHO DETALLE Y PRUEBAS) ---
-# El parsing de CLI es complejo y estas funciones son solo un punto de partida
-
-def parse_eigrp_neighbors(output):
-    neighbors = []
-    # Ejemplo de patrón para 'show ip eigrp neighbors'
-    # H   Address                 Interface              Hold Uptime   SRTT   RTO  Q  Seq
-    # 0   10.1.1.2                GigabitEthernet1/0     10 00:01:30    1   500  0  5
-    lines = output.splitlines()
-    header_found = False
-    for line in lines:
-        if "H   Address" in line: # Identificar la línea del encabezado
-            header_found = True
-            continue
-        if header_found and line.strip() and not line.startswith("IP-EIGRP"): # Asegurarse de que no sea el inicio de la salida o una línea vacía
-            match = re.match(r"^\s*(\d+)\s+([\d.]+)\s+(\S+)\s+(\d+)\s+([\d:]+)\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)", line.strip())
-            if match:
-                neighbors.append({
-                    "handle": match.group(1),
-                    "address": match.group(2),
-                    "interface": match.group(3),
-                    "hold_time": match.group(4),
-                    "uptime": match.group(5),
-                    "srtt": match.group(6),
-                    "rto": match.group(7),
-                    "q_count": match.group(8),
-                    "seq_num": match.group(9)
-                })
-            elif "EIGRP-IPv4 Neighbors for AS" in line: # Detener si llega al final de la tabla real
-                break
-    if not neighbors and "Error" in output: # Si el comando falló en el router
-        return {"error": output}
-    if not neighbors and "Invalid input detected" in output:
-        return {"error": output} # Devuelve el error raw
-    if not neighbors:
-        return {"error": "No neighbors found or parsing failed. Raw output: " + output}
-    return neighbors
-
-def parse_eigrp_routes(output):
-    routes = []
-    # Este parsing es mucho más complejo y necesitará expresiones regulares sofisticadas
-    # para extraer la dirección de red, métrica, via, etc.
-    # Por ahora, para simplificar, devolveremos la salida raw si no se implementa un parsing complejo
-    if "Error" in output or "Invalid input detected" in output:
-        return {"error": output}
-    if "D" not in output: # Si no hay rutas EIGRP, podría no ser un error
-        return {"message": "No EIGRP routes found.", "raw_output": output}
-    return {"raw_output": output, "message": "Parsing for routes not fully implemented. Displaying raw output."}
+        response = requests.get(
+            url,
+            headers=headers,
+            auth=(username, password),
+            verify=False  # Deshabilita la verificación de certificado SSL (¡SOLO PARA LABS!)
+        )
+        response.raise_for_status() # Lanza una excepción para errores HTTP (4xx o 5xx)
+        return {"status": "success", "data": response.json()}
+    except requests.exceptions.RequestException as e:
+        print(f"Error al conectar con RESTCONF para path '{path_suffix}': {e}")
+        return {"status": "error", "message": f"Error de conexión o RESTCONF: {e}"}
+    except json.JSONDecodeError as e:
+        # Captura si la respuesta no es un JSON válido (ej., si hay un error en el router)
+        print(f"Error al decodificar JSON de la respuesta para path '{path_suffix}': {e}. Respuesta RAW: {response.text}")
+        return {"status": "error", "message": f"Respuesta del router no es JSON válida: {e}. Respuesta: {response.text[:200]}..."}
 
 
-def parse_eigrp_protocols(output):
-    protocols_info = {}
-    # Este parsing también es complejo y necesitará expresiones regulares para cada campo
-    # como AS number, advertised networks, administrative distance, etc.
-    if "Error" in output or "Invalid input detected" in output:
-        return {"error": output}
+# --- Funciones de Parsing de Salida RESTCONF (JSON) ---
+# Estas funciones procesarán los datos JSON recibidos de RESTCONF.
+# Inicialmente, simplemente devolverán los datos JSON completos para que los veas.
+# Un paso posterior sería extraer y formatear campos específicos.
+
+def parse_eigrp_neighbors_restconf(data):
+    """
+    Parsea los datos JSON de vecinos EIGRP recibidos via RESTCONF.
+    data: El objeto JSON con los datos de vecinos.
+    """
+    if "error" in data:
+        return data # Devuelve el error directamente
     
-    # Ejemplos muy básicos de extracción
-    as_match = re.search(r'Routing Protocol is "eigrp (\d+)"', output)
-    if as_match:
-        protocols_info['AS_Number'] = as_match.group(1)
+    # Aquí iría la lógica para extraer campos específicos de los vecinos del JSON
+    # Por ahora, devolvemos el JSON de datos completo o un mensaje si está vacío
+    if data and "data" in data and data["data"]:
+        return data["data"]
+    else:
+        return {"message": "No se encontraron vecinos EIGRP o los datos están vacíos."}
+
+def parse_eigrp_routes_restconf(data):
+    """
+    Parsea los datos JSON de la tabla de topología/rutas EIGRP recibidos via RESTCONF.
+    data: El objeto JSON con los datos de topología.
+    """
+    if "error" in data:
+        return data
     
-    networks_match = re.search(r'Routing for Networks:\s*(.*?)(?:Routing Information Sources:|$)', output, re.DOTALL)
-    if networks_match:
-        networks_list = [net.strip() for net in networks_match.group(1).splitlines() if net.strip()]
-        protocols_info['Advertised_Networks'] = networks_list
+    if data and "data" in data and data["data"]:
+        return data["data"]
+    else:
+        return {"message": "No se encontraron rutas EIGRP o los datos están vacíos."}
 
-    admin_dist_match = re.search(r'Distance: internal (\d+) external (\d+)', output)
-    if admin_dist_match:
-        protocols_info['Admin_Distance_Internal'] = admin_dist_match.group(1)
-        protocols_info['Admin_Distance_External'] = admin_dist_match.group(2)
+def parse_eigrp_protocols_restconf(data):
+    """
+    Parsea los datos JSON de los parámetros de protocolo EIGRP recibidos via RESTCONF.
+    data: El objeto JSON con los datos de protocolo.
+    """
+    if "error" in data:
+        return data
 
-    if not protocols_info:
-        return {"raw_output": output, "message": "Parsing for protocols not fully implemented. Displaying raw output."}
-    return protocols_info
+    if data and "data" in data and data["data"]:
+        return data["data"]
+    else:
+        return {"message": "No se encontraron parámetros de protocolo EIGRP o los datos están vacíos."}
 
-# La tabla de topología es muy similar a la de rutas, puedes usar un parsing similar
-def parse_eigrp_topology(output):
-    if "Error" in output or "Invalid input detected" in output:
-        return {"error": output}
-    return {"raw_output": output, "message": "Parsing for topology not fully implemented. Displaying raw output."} # Placeholder
+# La función para obtener el estado completo también devolverá el JSON completo
+def parse_eigrp_full_state_restconf(data):
+    """
+    Devuelve el estado completo de EIGRP recibido via RESTCONF.
+    data: El objeto JSON con el estado completo.
+    """
+    if "error" in data:
+        return data
+    
+    if data and "data" in data and data["data"]:
+        return data["data"]
+    else:
+        return {"message": "No se encontraron datos completos de EIGRP."}

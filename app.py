@@ -4,11 +4,13 @@ from flask import Flask, render_template, jsonify, request
 # from flask_cors import CORS # Si la página web se sirviera desde un origen diferente (ej. XAMPP)
 
 import router_model
-import config
+import config # Todavía necesitamos config.py para las credenciales
 
-app = Flask(__name__, static_folder='public') # Configura Flask para servir desde 'public'
+app = Flask(__name__, static_folder='public', template_folder='templates') # Configura Flask para servir desde 'public'
 
-# CORS(app) # Descomentar si aún tienes problemas de CORS y si el frontend se sirve por separado
+# Si la página web se sirve desde un origen diferente (ej. XAMPP Apache)
+# entonces sí necesitas CORS:
+# CORS(app) 
 
 # --- Rutas de API para el frontend ---
 
@@ -18,30 +20,37 @@ def index():
 
 @app.route('/api/eigrp_neighbors_v4', methods=['GET'])
 def api_eigrp_neighbors():
-    # Obtener la salida CLI de 'show ip eigrp neighbors'
-    command = "show ip eigrp neighbors"
-    output = router_model.get_cli_output(command)
-    
-    # Parsear la salida
-    parsed_data = router_model.parse_eigrp_neighbors(output)
-    return jsonify({"status": "success", "data": parsed_data})
+    # Path YANG para obtener vecinos EIGRPv4
+    # ¡CRÍTICO! Ajusta instance-id y process-id si no son 1/1
+    # Recuerda que tu AS en el router es 100, así que instance-id=100
+    path = "Cisco-IOS-XE-eigrp-oper:eigrp-state/eigrp-instance/instance-id=100/process-id=1/eigrp-neighbors"
+    raw_data = router_model.get_restconf_data(path)
+    parsed_data = router_model.parse_eigrp_neighbors_restconf(raw_data)
+    return jsonify({"status": raw_data["status"], "data": parsed_data, "message": raw_data.get("message")})
 
 @app.route('/api/eigrp_routes_v4', methods=['GET'])
 def api_eigrp_routes():
-    command = "show ip route eigrp"
-    output = router_model.get_cli_output(command)
-    parsed_data = router_model.parse_eigrp_routes(output)
-    return jsonify({"status": "success", "data": parsed_data})
+    # Path YANG para obtener tabla de topología (rutas) EIGRPv4
+    path = "Cisco-IOS-XE-eigrp-oper:eigrp-state/eigrp-instance/instance-id=100/process-id=1/topology-table"
+    raw_data = router_model.get_restconf_data(path)
+    parsed_data = router_model.parse_eigrp_routes_restconf(raw_data)
+    return jsonify({"status": raw_data["status"], "data": parsed_data, "message": raw_data.get("message")})
 
 @app.route('/api/eigrp_protocols_v4', methods=['GET'])
 def api_eigrp_protocols():
-    command = "show ip protocols"
-    output = router_model.get_cli_output(command)
-    parsed_data = router_model.parse_eigrp_protocols(output)
-    return jsonify({"status": "success", "data": parsed_data})
+    # Path YANG para obtener parámetros de protocolo EIGRPv4
+    path = "Cisco-IOS-XE-eigrp-oper:eigrp-state/eigrp-instance/instance-id=100/process-id=1/eigrp-protocol"
+    raw_data = router_model.get_restconf_data(path)
+    parsed_data = router_model.parse_eigrp_protocols_restconf(raw_data)
+    return jsonify({"status": raw_data["status"], "data": parsed_data, "message": raw_data.get("message")})
 
-# Puedes añadir más rutas de API aquí (ej. para topology)
+@app.route('/api/eigrp_full_state_v4', methods=['GET'])
+def api_eigrp_full_state():
+    # Path YANG para obtener estado completo de EIGRP
+    path = "Cisco-IOS-XE-eigrp-oper:eigrp-state"
+    raw_data = router_model.get_restconf_data(path)
+    parsed_data = router_model.parse_eigrp_full_state_restconf(raw_data)
+    return jsonify({"status": raw_data["status"], "data": parsed_data, "message": raw_data.get("message")})
 
 if __name__ == '__main__':
-    # Asegúrate de que las credenciales del router en config.py sean correctas
-    app.run(debug=True, host='0.0.0.0', port=5000) # Flask correrá en puerto 5000, accesible desde localhost
+    app.run(debug=True, host='0.0.0.0', port=5000) # Flask correrá en puerto 5000
