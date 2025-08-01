@@ -17,14 +17,14 @@ def get_restconf_data(path_suffix):
     router_port = config.ROUTER_PORT
     username = config.ROUTER_USERNAME
     password = config.ROUTER_PASSWORD
-
+    
     # Construye la URL completa del endpoint RESTCONF
-    # Usamos HTTP aquí porque el puerto 8080 en Azure VM se reenvía a HTTP puerto 80 en el router
-    url = f"http://{router_ip}:{router_port}/restconf/data/{path_suffix}"
+    # Usamos HTTPS y el puerto 443 (que se reenvía desde el 8080 público)
+    url = f"https://{router_ip}:{router_port}/restconf/data/{path_suffix}"
 
     headers = {
         "Accept": "application/yang-data+json",  # Solicita respuesta en formato JSON
-        "Content-Type": "application/yang-data+json" # Especifica que el contenido es JSON (aunque sea GET)
+        "Content-Type": "application/yang-data+json" # Especifica que el contenido es JSON
     }
 
     try:
@@ -37,67 +37,94 @@ def get_restconf_data(path_suffix):
         response.raise_for_status() # Lanza una excepción para errores HTTP (4xx o 5xx)
         return {"status": "success", "data": response.json()}
     except requests.exceptions.RequestException as e:
-        print(f"Error al conectar con RESTCONF para path '{path_suffix}': {e}")
         return {"status": "error", "message": f"Error de conexión o RESTCONF: {e}"}
     except json.JSONDecodeError as e:
-        # Captura si la respuesta no es un JSON válido (ej., si hay un error en el router)
-        print(f"Error al decodificar JSON de la respuesta para path '{path_suffix}': {e}. Respuesta RAW: {response.text}")
         return {"status": "error", "message": f"Respuesta del router no es JSON válida: {e}. Respuesta: {response.text[:200]}..."}
 
-
 # --- Funciones de Parsing de Salida RESTCONF (JSON) ---
-# Estas funciones procesarán los datos JSON recibidos de RESTCONF.
-# Inicialmente, simplemente devolverán los datos JSON completos para que los veas.
-# Un paso posterior sería extraer y formatear campos específicos.
 
 def parse_eigrp_neighbors_restconf(data):
     """
-    Parsea los datos JSON de vecinos EIGRP recibidos via RESTCONF.
-    data: El objeto JSON con los datos de vecinos.
+    Parsea los datos JSON de vecinos EIGRP y los formatea para mostrarlos.
     """
-    if "error" in data:
-        return data # Devuelve el error directamente
+    if data["status"] != "success":
+        return data
+
+    neighbors_list = []
+    try:
+        # Navega por la estructura JSON para encontrar la lista de interfaces y vecinos
+        instances = data["data"]["Cisco-IOS-XE-eigrp-oper:eigrp-oper-data"]["eigrp-instance"]
+        if instances:
+            for instance in instances:
+                if "eigrp-interface" in instance:
+                    for interface in instance["eigrp-interface"]:
+                        if "eigrp-nbr" in interface:
+                            for neighbor in interface["eigrp-nbr"]:
+                                neighbors_list.append({
+                                    "afi": neighbor["afi"],
+                                    "neighbor_address": neighbor["nbr-address"],
+                                    "interface_local": interface["name"]
+                                })
+            return neighbors_list if neighbors_list else {"message": "No se encontraron vecinos EIGRP."}
+    except KeyError:
+        return {"message": "La estructura de los datos JSON no es la esperada."}
     
-    # Aquí iría la lógica para extraer campos específicos de los vecinos del JSON
-    # Por ahora, devolvemos el JSON de datos completo o un mensaje si está vacío
-    if data and "data" in data and data["data"]:
-        return data["data"]
-    else:
-        return {"message": "No se encontraron vecinos EIGRP o los datos están vacíos."}
+    return {"message": "No se encontraron vecinos EIGRP o los datos están vacíos."}
+
 
 def parse_eigrp_routes_restconf(data):
     """
-    Parsea los datos JSON de la tabla de topología/rutas EIGRP recibidos via RESTCONF.
-    data: El objeto JSON con los datos de topología.
+    Parsea los datos JSON de la tabla de topología/rutas EIGRP.
     """
-    if "error" in data:
+    if data["status"] != "success":
         return data
-    
-    if data and "data" in data and data["data"]:
-        return data["data"]
-    else:
-        return {"message": "No se encontraron rutas EIGRP o los datos están vacíos."}
+
+    routes_list = []
+    try:
+        instances = data["data"]["Cisco-IOS-XE-eigrp-oper:eigrp-oper-data"]["eigrp-instance"]
+        if instances:
+            for instance in instances:
+                if "eigrp-topo" in instance:
+                    for topo in instance["eigrp-topo"]:
+                        # La tabla de topología a veces está anidada
+                        # Esta parte necesitaría ser ajustada a la estructura exacta de la respuesta
+                        # Por ahora, devolvemos el JSON de topología completo
+                        routes_list.append(topo)
+    except KeyError:
+        return {"message": "La estructura de los datos JSON no es la esperada."}
+
+    return routes_list if routes_list else {"message": "No se encontraron rutas EIGRP."}
+
 
 def parse_eigrp_protocols_restconf(data):
     """
-    Parsea los datos JSON de los parámetros de protocolo EIGRP recibidos via RESTCONF.
-    data: El objeto JSON con los datos de protocolo.
+    Parsea los datos JSON de los parámetros de protocolo EIGRP.
     """
-    if "error" in data:
+    if data["status"] != "success":
         return data
 
-    if data and "data" in data and data["data"]:
-        return data["data"]
-    else:
-        return {"message": "No se encontraron parámetros de protocolo EIGRP o los datos están vacíos."}
+    try:
+        instances = data["data"]["Cisco-IOS-XE-eigrp-oper:eigrp-oper-data"]["eigrp-instance"]
+        if instances:
+            # Asumimos que solo hay una instancia de EIGRP por AS
+            instance_data = instances[0]
+            protocol_info = {
+                "as_number": instance_data["as-num"],
+                "router_id": f"{instance_data['router-id'] // 16777216}.{(instance_data['router-id'] >> 16) & 255}.{(instance_data['router-id'] >> 8) & 255}.{instance_data['router-id'] & 255}",
+                "protocol_name": instance_data["afi"]
+            }
+            return protocol_info
+    except KeyError:
+        return {"message": "La estructura de los datos JSON no es la esperada."}
 
-# La función para obtener el estado completo también devolverá el JSON completo
+    return {"message": "No se encontraron parámetros de protocolo EIGRP."}
+
+
 def parse_eigrp_full_state_restconf(data):
     """
     Devuelve el estado completo de EIGRP recibido via RESTCONF.
-    data: El objeto JSON con el estado completo.
     """
-    if "error" in data:
+    if data["status"] != "success":
         return data
     
     if data and "data" in data and data["data"]:

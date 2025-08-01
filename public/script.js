@@ -17,7 +17,7 @@ document.addEventListener('DOMContentLoaded', () => {
             outputArea.textContent = `Solicitando datos para ${commandType}...`;
 
             // La API de Flask se ejecuta en el mismo puerto que la página si Flask sirve el frontend
-            // Por lo tanto, no necesitamos especificar http://localhost:5000 si Flask corre ahí.
+            // Por lo tanto, no necesitamos especificar http://localhost:5101 si Flask corre ahí
             const apiEndpoint = `/api/eigrp_${commandType}_v4`; // Ruta relativa a la misma aplicación Flask
 
             try {
