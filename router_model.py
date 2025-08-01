@@ -23,8 +23,8 @@ def get_restconf_data(path_suffix):
     url = f"https://{router_ip}:{router_port}/restconf/data/{path_suffix}"
 
     headers = {
-        "Accept": "application/yang-data+json",  # Solicita respuesta en formato JSON
-        "Content-Type": "application/yang-data+json" # Especifica que el contenido es JSON
+        "Accept": "application/yang-data+json",
+        "Content-Type": "application/yang-data+json"
     }
 
     try:
@@ -32,9 +32,9 @@ def get_restconf_data(path_suffix):
             url,
             headers=headers,
             auth=(username, password),
-            verify=False  # Deshabilita la verificación de certificado SSL (¡SOLO PARA LABS!)
+            verify=False
         )
-        response.raise_for_status() # Lanza una excepción para errores HTTP (4xx o 5xx)
+        response.raise_for_status()
         return {"status": "success", "data": response.json()}
     except requests.exceptions.RequestException as e:
         return {"status": "error", "message": f"Error de conexión o RESTCONF: {e}"}
@@ -43,38 +43,46 @@ def get_restconf_data(path_suffix):
 
 # --- Funciones de Parsing de Salida RESTCONF (JSON) ---
 
-def parse_eigrp_neighbors_restconf(data):
+def parse_eigrp_neighbors_restconf(data, as_num, afi):
     """
     Parsea los datos JSON de vecinos EIGRP y los formatea para mostrarlos.
+    as_num: El número de AS para la instancia EIGRP (ej., 10 o 1).
+    afi: El tipo de dirección a buscar (ej., 'eigrp-af-ipv4' o 'eigrp-af-ipv6').
     """
     if data["status"] != "success":
         return data
 
     neighbors_list = []
     try:
-        # Navega por la estructura JSON para encontrar la lista de interfaces y vecinos
         instances = data["data"]["Cisco-IOS-XE-eigrp-oper:eigrp-oper-data"]["eigrp-instance"]
         if instances:
-            for instance in instances:
-                if "eigrp-interface" in instance:
-                    for interface in instance["eigrp-interface"]:
-                        if "eigrp-nbr" in interface:
-                            for neighbor in interface["eigrp-nbr"]:
-                                neighbors_list.append({
-                                    "afi": neighbor["afi"],
-                                    "neighbor_address": neighbor["nbr-address"],
-                                    "interface_local": interface["name"]
-                                })
-            return neighbors_list if neighbors_list else {"message": "No se encontraron vecinos EIGRP."}
-    except KeyError:
+            # Busca la instancia EIGRP correcta (IPv4 o IPv6)
+            target_instance = next(
+                (inst for inst in instances if inst["as-num"] == as_num and inst["afi"] == afi),
+                None
+            )
+            if target_instance and "eigrp-interface" in target_instance:
+                for interface in target_instance["eigrp-interface"]:
+                    if "eigrp-nbr" in interface:
+                        for neighbor in interface["eigrp-nbr"]:
+                            neighbors_list.append({
+                                "as_num": target_instance.get("as-num"),
+                                "neighbor_address": neighbor.get("nbr-address"),
+                                "interface_local": interface.get("name"),
+                                "hold_time": interface.get("hold-timer")
+                            })
+    except (KeyError, TypeError):
         return {"message": "La estructura de los datos JSON no es la esperada."}
     
-    return {"message": "No se encontraron vecinos EIGRP o los datos están vacíos."}
+    return neighbors_list if neighbors_list else {"message": "No se encontraron vecinos EIGRP o los datos están vacíos."}
 
 
-def parse_eigrp_routes_restconf(data):
+def parse_eigrp_routes_restconf(data, as_num, afi):
     """
-    Parsea los datos JSON de la tabla de topología/rutas EIGRP.
+    [ANOTACIÓN] Esta función se encarga de extraer la 'tabla de enrutamiento' (solo las mejores rutas).
+    data: El objeto JSON completo con los datos de EIGRP.
+    as_num: El número de AS para la instancia EIGRP.
+    afi: El tipo de dirección a buscar.
     """
     if data["status"] != "success":
         return data
@@ -83,22 +91,24 @@ def parse_eigrp_routes_restconf(data):
     try:
         instances = data["data"]["Cisco-IOS-XE-eigrp-oper:eigrp-oper-data"]["eigrp-instance"]
         if instances:
-            for instance in instances:
-                if "eigrp-topo" in instance:
-                    for topo in instance["eigrp-topo"]:
-                        # La tabla de topología a veces está anidada
-                        # Esta parte necesitaría ser ajustada a la estructura exacta de la respuesta
-                        # Por ahora, devolvemos el JSON de topología completo
-                        routes_list.append(topo)
-    except KeyError:
-        return {"message": "La estructura de los datos JSON no es la esperada."}
-
+            target_instance = next(
+                (inst for inst in instances if inst["as-num"] == as_num and inst["afi"] == afi),
+                None
+            )
+            if target_instance and "eigrp-topo" in target_instance and "topology-route" in target_instance["eigrp-topo"][0]:
+                routes_list = target_instance["eigrp-topo"][0]["topology-route"]
+    except (KeyError, TypeError):
+        return {"message": "La estructura de los datos JSON no es la esperada para rutas."}
+    
     return routes_list if routes_list else {"message": "No se encontraron rutas EIGRP."}
 
 
-def parse_eigrp_protocols_restconf(data):
+def parse_eigrp_topology_restconf(data, as_num, afi):
     """
-    Parsea los datos JSON de los parámetros de protocolo EIGRP.
+    [ANOTACIÓN] Esta función se encarga de extraer la 'tabla de topología' completa.
+    data: El objeto JSON completo con los datos de EIGRP.
+    as_num: El número de AS para la instancia EIGRP.
+    afi: El tipo de dirección a buscar.
     """
     if data["status"] != "success":
         return data
@@ -106,16 +116,52 @@ def parse_eigrp_protocols_restconf(data):
     try:
         instances = data["data"]["Cisco-IOS-XE-eigrp-oper:eigrp-oper-data"]["eigrp-instance"]
         if instances:
-            # Asumimos que solo hay una instancia de EIGRP por AS
-            instance_data = instances[0]
-            protocol_info = {
-                "as_number": instance_data["as-num"],
-                "router_id": f"{instance_data['router-id'] // 16777216}.{(instance_data['router-id'] >> 16) & 255}.{(instance_data['router-id'] >> 8) & 255}.{instance_data['router-id'] & 255}",
-                "protocol_name": instance_data["afi"]
-            }
-            return protocol_info
-    except KeyError:
-        return {"message": "La estructura de los datos JSON no es la esperada."}
+            target_instance = next(
+                (inst for inst in instances if inst["as-num"] == as_num and inst["afi"] == afi),
+                None
+            )
+            if target_instance and "eigrp-topo" in target_instance:
+                return target_instance["eigrp-topo"]
+    except (KeyError, TypeError):
+        return {"message": "La estructura de los datos JSON no es la esperada para la topología."}
+
+    return {"message": "No se encontró la tabla de topología EIGRP."}
+
+
+def parse_eigrp_protocols_restconf(data, as_num, afi):
+    """
+    Parsea los datos JSON de los parámetros de protocolo EIGRP.
+    as_num: El número de AS para la instancia EIGRP.
+    afi: El tipo de dirección a buscar.
+    """
+    if data["status"] != "success":
+        return data
+
+    try:
+        instances = data["data"]["Cisco-IOS-XE-eigrp-oper:eigrp-oper-data"]["eigrp-instance"]
+        if instances:
+            target_instance = next(
+                (inst for inst in instances if inst["as-num"] == as_num and inst["afi"] == afi),
+                None
+            )
+            if target_instance:
+                # Convertir el router-id de entero a formato IP legible
+                router_id_int = target_instance["router-id"]
+                router_id_ip = f"{router_id_int // 16777216}.{(router_id_int >> 16) & 255}.{(router_id_int >> 8) & 255}.{router_id_int & 255}"
+                
+                protocol_info = {
+                    "as_number": target_instance.get("as-num"),
+                    "router_id": router_id_ip,
+                    "protocol_name": target_instance.get("afi"),
+                    "max_paths": target_instance.get("maximum-path"),
+                    "admin_distance": {
+                        "internal": 90,
+                        "external": 170
+                    }
+                }
+                return protocol_info
+    except (KeyError, TypeError):
+        return {"message": "No se encontraron parámetros de protocolo EIGRP o la estructura JSON no es la esperada."}
 
     return {"message": "No se encontraron parámetros de protocolo EIGRP."}
 

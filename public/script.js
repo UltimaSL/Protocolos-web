@@ -2,7 +2,7 @@
 document.addEventListener('DOMContentLoaded', () => {
     const commandList = document.querySelectorAll('ul li');
     const outputArea = document.getElementById('output-area');
-    // Estilos básicos para la salida
+    // Estilos básicos para la salida (puedes mover esto a style.css)
     outputArea.style.backgroundColor = '#333';
     outputArea.style.color = '#0f0';
     outputArea.style.padding = '15px';
@@ -14,24 +14,17 @@ document.addEventListener('DOMContentLoaded', () => {
     commandList.forEach(item => {
         item.addEventListener('click', async (event) => {
             const commandType = event.target.dataset.commandType;
-            outputArea.textContent = `Solicitando datos para ${commandType}...`;
+            outputArea.textContent = `Solicitando datos de ${commandType}...`;
 
-            // La API de Flask se ejecuta en el mismo puerto que la página si Flask sirve el frontend
-            // Por lo tanto, no necesitamos especificar http://localhost:5101 si Flask corre ahí
-            const apiEndpoint = `/api/eigrp_${commandType}_v4`; // Ruta relativa a la misma aplicación Flask
+            // La URL de la API ahora usa el tipo de comando para construir la ruta
+            const apiEndpoint = `/api/eigrp_${commandType}`;
 
             try {
                 const response = await fetch(apiEndpoint);
                 const result = await response.json();
 
                 if (result.status === 'success') {
-                    // Si el parsing es completo, mostrar el objeto JSON
-                    if (typeof result.data === 'object' && result.data !== null && !result.data.raw_output) {
-                        outputArea.textContent = JSON.stringify(result.data, null, 2);
-                    } else {
-                        // Si el parsing no está completo, mostrar la salida raw
-                        outputArea.textContent = result.data.raw_output || JSON.stringify(result.data, null, 2);
-                    }
+                    outputArea.textContent = JSON.stringify(result.data, null, 2);
                 } else {
                     outputArea.textContent = `Error del servidor Flask: ${result.message}`;
                     console.error('Error del servidor Flask:', result.message);

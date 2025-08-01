@@ -3,27 +3,29 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Monitoreo EIGRPv4 - RESTCONF</title>
-    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+    <title>Monitoreo EIGRP - RESTCONF</title>
+    <link rel="stylesheet" href="../public/style.css">
 </head>
 <body>
     <div class="container">
-        <h1>Monitoreo de EIGRPv4 (RESTCONF)</h1>
-        <p>Seleccione un comando para obtener su estado desde el router (R1).</p>
+        <h1>Monitoreo de EIGRP (RESTCONF)</h1>
+        <p>Seleccione un comando para obtener su estado desde el router.</p>
 
-        <h2>Comandos de Verificación de EIGRPv4</h2>
+        <h2>Comandos de Verificación de EIGRP (IPv4 y IPv6)</h2>
         <ul>
-            <li data-command-type="neighbors">show ip eigrp neighbors</li>
-            <li data-command-type="routes">show ip route eigrp</li>
-            <li data-command-type="protocols">show ip protocols (EIGRP section)</li>
-            <li data-command-type="topology">show ip eigrp topology</li> 
+            <li data-command-type="neighbors_all">show ip eigrp neighbors / show ipv6 eigrp neighbors</li>
+            <li data-command-type="routes_all">show ip route eigrp / show ipv6 route eigrp</li>
+            <li data-command-type="protocols_all">show ip protocols / show ipv6 protocols</li>
             <li data-command-type="full_state">Obtener Estado Completo EIGRP</li>
         </ul>
-
+        
         <h3>Salida del Comando:</h3>
         <pre id="output-area">Haga clic en un comando arriba para ver la salida del router.</pre>
 
+        <div class="note">
+            <strong>Nota:</strong> Este proyecto se está ejecutando en la nube.
+        </div>
     </div>
-    <script src="{{ url_for('static', filename='script.js') }}"></script>
+    <script src="../public/script.js"></script>
 </body>
 </html>
